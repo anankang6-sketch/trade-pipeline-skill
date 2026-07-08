@@ -321,76 +321,9 @@ output/2601/
 <details>
 <summary><b>技术细节（给开发者和技术评估者看的）</b></summary>
 
-## 架构
+架构图、8 步管线、关键设计决策、完整 CLI 参考、测试方法和技术栈，都整理在独立的技术深度版里：
 
-```mermaid
-graph TD
-    A["Excel 询价单"] --> B["提取器<br/>excel_extractor"]
-    B --> C["理解层<br/>规则 / LLM 解析"]
-    C --> D["组装器<br/>buyer 匹配 + 实体解析"]
-    D --> E["OrderModel<br/>唯一数据源"]
-
-    E --> F["报价单 Writer"]
-    E --> G["PI Writer"]
-    E --> H["CI Writer"]
-    E --> I["PL Writer"]
-
-    E -.-> N["验证层"]
-    N -.- N1["BuyerMatchError → review.json 硬阻断"]
-    N -.- N2["UUID 锚点价格回写 — 行序无关"]
-
-    style E fill:#1F3864,color:#fff,stroke:#1F3864
-    style N fill:#f5f5f5,stroke:#999
-```
-
-### 8 步管线
-
-| 步骤 | 模块 | 功能 |
-|------|------|------|
-| 1 | `extractors/excel_extractor.py` | 自动识别 Excel 格式，选最佳 Sheet，提取数据 |
-| 2 | `understanding/llm_parser.py` | 解析为结构化数据（规则模式或 Claude API + L1/L2 缓存） |
-| 3 | `understanding/canonicalizer.py` | 标准化：DIN/ISO/GB 规范、中英翻译、分组 |
-| 4 | `understanding/assembler.py` | Buyer 多级匹配 + OrderModel 组装 |
-| 5 | `writers/quote_writer.py` | 报价单 + 隐藏 UUID 列 |
-| 6 | `writers/pi_writer.py` | 形式发票 |
-| 7 | `writers/ci_writer.py` | 商业发票 + SAY 大写金额 |
-| 8 | `writers/pl_writer.py` | 装箱单（Lite 内置 / Full 接私有引擎） |
-
-### 关键设计决策
-
-1. **OrderModel 唯一数据源** — 所有 Writer 只从 OrderModel 读数据，不允许重新解析 Excel。改一处数据，四份单据联动。
-
-2. **UUID 锚点价格回写** — 报价单每行藏一个 UUID。用户插入行、调整顺序后回写价格，系统通过 UUID 精确定位，不会错位。
-
-3. **买家匹配失败 = 硬阻断** — 四级匹配（法定名→别名→子串→模糊）全部未命中时，管线停止并生成 `review.json`。不猜测、不跳过。
-
-4. **双模式解析 + 两级缓存** — 规则优先（快、免费），LLM 兜底（复杂格式）。L1 文件哈希 + L2 内容哈希 + prompt 版本，改了 prompt 自动失效。
-
-5. **三种计价模式** — CNY/MPCS、USD/PC、USD/TON，从 Excel 列头自动检测。
-
-6. **两阶段业务流程** — `--quote-only` 先生成报价单（谈判用），`--price-update` 确认后再生成 PI/CI/PL（正式单据）。
-
-### 运行测试
-
-推荐使用 Python 3.12；仓库包含 `.python-version`，pyenv / uv 用户会自动识别。
-
-```bash
-py -3.12 -m pip install -e ".[test]"
-py -3.12 -m pytest tests -q
-py -3.12 -m ruff check trade_pipeline tests
-```
-
-### 设计文档
-
-- [Gate Pattern](docs/gate-pattern.md) — AI 操作的三级门控：哪些自动执行、哪些要问人、哪些绝不能做
-- [Output Verification](docs/output-verification.md) — AI 生成的文档怎么验证：逐字段校验、OCR 比对、人工抽检
-- [LLM Wiki Pattern](docs/llm-wiki-pattern.md) — 怎么用 AI 把零散的业务知识整理成可复用的知识库
-
-### 技术栈
-
-- **Python 3.12** + openpyxl + PyYAML
-- **Claude API**（可选，用于 LLM 解析模式）
-- **Claude Code**（开发环境，通过 MCP 协议协作构建）
+👉 **[README_DEV.md — 技术深度版](README_DEV.md)**
 
 </details>
 
