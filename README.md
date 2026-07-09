@@ -361,6 +361,12 @@ output/2601/
 
 ---
 
+## 关于作者
+
+作者杨天机，更多外贸 AI skill 见 [tianji-skills](https://github.com/Dangooy/tianji-skills)（寻客/译盘/核单）。
+
+---
+
 ## 许可证
 
 MIT — 免费使用，可以自由修改。
