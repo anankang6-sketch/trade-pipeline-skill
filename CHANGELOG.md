@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-07-09
+
+Adversarial-review remediation. Two independent AI reviews (Claude Sonnet 5 self-review + Claude Fable 5 cross-check, both recorded under `docs/adversarial-review-2607*.md`) found buyer-matching false positives, a silent LLM-degradation path, and a silent price-column fallback — all capable of producing a structurally valid but factually wrong PI/CI without any error surfacing. This release closes those gaps.
+
+### Fixed
+- **Buyer fuzzy matching redesigned** (`buyer_matcher.py`): replaced unbounded bidirectional substring matching with "strip legal-form suffix, compare core names." Previously, short aliases (`"GF"`, `"Apex"`) participated in substring matching and could silently match unrelated companies (`"GF Industrial Supply"`, `"Apexon Software Ltd"`); a long legal name could also substring-match a completely different company sharing a prefix (`"Global Fasteners LLC"` vs `"Global Fasteners Trading LLC"`). Now: aliases are exact-match only; fuzzy matching strips legal suffixes (LLC/Ltd/GmbH/ООО/etc.) and requires the remaining "core name" to match exactly — extra real words (Trading, International) are rejected, suffix-only differences (Co vs Corp) are accepted; ambiguous matches across multiple buyers hard-block to `review.json` instead of picking one.
+- **LLM parse fallback no longer silently swallows data errors** (`llm_parser.py`): `except Exception` was catching network errors, auth failures, and malformed-JSON responses identically and falling back to rules mode without any signal — a user who explicitly requested `--use-llm` for a complex inquiry could silently get lower-accuracy rules-mode output with no indication anything degraded. Now split into two paths: `anthropic.APIError` (network/timeout/auth) falls back silently as before (genuine infra fault), while response-parsing failures (`json.JSONDecodeError`, malformed schema) fall back **and** tag the result with `_llm_degraded` + a reason string.
+- **Price write-back no longer silently misreads the wrong column** (`price_updater.py`): `_find_price_column` used to fall back to a hardcoded column F when the "Price" header couldn't be found — if a user reordered quotation columns, prices would silently be read from the wrong cell and written back incorrectly. Now raises `PriceUpdateError` instead of guessing.
+- **Product-name translation no longer stops after the first match** (`canonicalizer.py`): a description containing multiple Chinese product names (e.g. "六角螺栓配平垫圈") only had the first one translated before the loop broke, leaving the rest in Chinese on customer-facing documents. Now replaces all matches; translation table iterates longest-term-first so short terms can no longer clip a longer term mid-match.
+- **First-run demo experience**: `config.yaml`'s template ships with empty `sellers`/`buyers`, but no code path actually loaded `examples/demo_config.yaml` for the README/SKILL.md-advertised demo walkthrough — `python -m trade_pipeline --buyer global_fasteners` on a fresh checkout hard-blocked with an entity-resolution error. `load_config()` now merges the demo config into memory when `sellers` is empty (never writes to disk, never touches a real config).
+
+### Added
+- `_llm_degraded` flag is now consumed: `main.py` prints a visible warning (`⚠ 本次为降级结果`) with the failure reason whenever the LLM parse fell back due to a data/parsing error, instead of the degradation being invisible to the user.
+- `trade-pipeline-run` SKILL.md: buyer-match-failure review flow must now resolve each candidate's `name_en` from `config.yaml` and show real company names via `AskUserQuestion` — `review.json`'s `candidate_values` only stores raw buyer_id strings, so showing the bare ids was not actionable for a user. The Skill may no longer infer/guess a buyer from context and write `resolved_value` without the user explicitly naming it.
+- `trade-pipeline-run` SKILL.md: mandatory reminder after any PI/CI generation or price write-back — "PI/CI 是正式对外单证，发送给客户前请人工核对买家抬头、金额、税号是否正确." Automated precheck validates structure (missing fields, bad formats), not business correctness — it cannot catch a correctly-formatted document sent to the wrong buyer.
+- 9 new tests: LLM-degradation three-path contract (`test_llm_parser_fallback.py`), missing-price-column hard block, buyer negative-match / suffix-variant cases (218 → 227 total).
+
+### Docs
+- `docs/adversarial-review-2607.md` — original adversarial review (Claude Sonnet 5)
+- `docs/adversarial-review-2607-crosscheck.md` — independent cross-check and severity re-ranking (Claude Fable 5)
+
+[1.3.0]: https://github.com/Dangooy/trade-pipeline-skill/releases/tag/v1.3.0
+
 ## [1.2.2] - 2026-06-13
 
 Pre-internal-test patch. Fixes v1.2.1 regressions + adds error-log infrastructure. GUI/CI/docs only, no business logic changes.
