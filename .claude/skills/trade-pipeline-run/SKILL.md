@@ -77,14 +77,25 @@ Do NOT add `--interactive` flag (default to review.json mode for safety).
 If successful (exit code 0):
 - List all 6 generated files with paths
 - Show key stats: item count, buyer, seller, currency
+- **If the output contains "⚠ 本次为降级结果"** (LLM parse fell back to rules mode
+  due to a malformed response, not a network/auth error): surface this warning
+  to the user verbatim, don't bury it — the parsed data may be less accurate
+  than a normal `--use-llm` run, so ask the user to double-check item details.
 - Prompt next step: "报价单已生成，单价列（黄色高亮）待填写。填好后说'价格填好了'触发回写。"
 
 If buyer match failed (output contains "review.json"):
 - Show the review.json path
 - Explain: "buyer 匹配失败，已生成 review.json。"
-- Show candidate buyers from the output
-- Offer to help edit review.json:
-  - "选择正确的 buyer，我帮你编辑 review.json 并重新运行。"
+- `review.json`'s `candidate_values` only contains raw buyer_id strings (e.g.
+  `global_fasteners`) — **not company names**. Read `trade_pipeline/config/config.yaml`
+  yourself and look up each candidate id's `name_en` (and address, if helpful)
+  before showing anything to the user. Never show a bare buyer_id list.
+- **Must display the full candidate list with real company names** using
+  AskUserQuestion, and have the user explicitly pick the correct one
+  (or say "都不是，是新客户"). Only after the user's explicit choice, edit
+  `review.json` to set `resolved_value` to that buyer_id, then rerun with `--confirm`.
+- Do NOT infer or guess a buyer_id from context (order history, similar past
+  orders, etc.) and write it into `resolved_value` without the user naming it.
 
 ## Flow 2: Price Write-Back
 
@@ -106,11 +117,20 @@ If buyer match failed (output contains "review.json"):
    - How many prices were updated
    - Whether PI/CI were regenerated
    - If errors occurred: show errors, advise to fix and retry
+   - **If PI/CI were regenerated, always end with this reminder — do not skip it**:
+     "PI/CI 是正式对外单证，发送给客户前请人工核对买家抬头、金额、税号是否正确。"
+     Automated checks (precheck) only catch structurally invalid data (missing
+     weight, bad format, unknown seller) — they cannot detect a correctly-formatted
+     document sent to the wrong buyer or with a wrong amount that's still valid-looking.
 
 ## Notes
 
 - This skill handles the runtime execution. For first-time configuration, use the `trade-pipeline-init` skill.
 - All generated files go to `output/<order_no>/`.
 - The pipeline generates 6 files: rfq.json, model.json, quotation.xlsx, pi.xlsx, ci.xlsx, pl.xlsx.
+- **PI/CI are legally consequential documents.** Whenever they're generated or
+  regenerated, remind the user to manually verify buyer name/address, amounts,
+  and tax IDs before sending — the pipeline's automated checks validate structure,
+  not business correctness.
 - Price column in quotation is yellow-highlighted — this is the manual input point.
 - After price write-back, PI and CI are regenerated with actual amounts.

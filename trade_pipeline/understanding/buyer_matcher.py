@@ -5,12 +5,28 @@ understanding/buyer_matcher.py — buyer 多级匹配器
   1. manifest/hints 显式指定的 buyer_id
   2. legal_names 精确匹配（规范化后）
   3. aliases 精确匹配（规范化后）
-  4. 模糊匹配（子串包含）
+  4. 模糊匹配（剥离法律后缀后核心名相等；aliases 不参与，歧义即阻断）
   5. 全部未命中 → raise BuyerMatchError（硬阻断）
 
 禁止：返回 None、静默跳过、继续流转到 Writer。
 """
 import re
+
+# 模糊匹配的核心名最短长度：剥离法律后缀后的核心名短于此值不参与模糊匹配。
+MIN_FUZZY_LEN = 5
+
+# 公司名中的法律形式后缀词（大小写无关，token 级剥离标点后比对）。
+# 模糊匹配只比对剥离这些词之后的"核心名"。
+LEGAL_SUFFIX_TOKENS = {
+    # 英语系
+    "llc", "ltd", "co", "corp", "inc", "limited", "liability", "company",
+    "llp", "plc", "pte", "pty", "holdings",
+    # 欧陆
+    "gmbh", "bv", "nv", "srl", "sa", "sarl", "ag", "oy", "ab", "aps", "kft",
+    # 俄语系（拉丁转写 + 西里尔）
+    "ooo", "zao", "oao", "pao", "jsc", "pjsc", "cjsc",
+    "ооо", "зао", "оао", "пао", "ао", "ип",
+}
 
 
 class BuyerMatchError(Exception):
@@ -35,6 +51,20 @@ def normalize(name: str) -> str:
     # 多空格合一
     name = re.sub(r'\s+', ' ', name)
     return name.lower().strip()
+
+
+def _core_name(norm: str) -> str:
+    """
+    剥离法律形式后缀，得到公司"核心名"。
+
+    "global fasteners llc"        → "global fasteners"
+    "global fasteners llc."       → "global fasteners"（token 级剥标点）
+    "ооо метиз трейдинг"          → "метиз трейдинг"
+    "global fasteners trading llc" → "global fasteners trading"
+    """
+    tokens = [t.strip(".,;:&()[]-") for t in norm.split()]
+    core = [t for t in tokens if t and t not in LEGAL_SUFFIX_TOKENS]
+    return " ".join(core)
 
 
 def match_buyer(
@@ -114,21 +144,36 @@ def match_buyer(
             if normalize(alias) == norm_extracted:
                 return buyer_id
 
-    # ── 优先级 4：模糊匹配（子串包含，双向） ──
-    for buyer_id, buyer in buyers.items():
-        all_names = (
-            buyer.get("legal_names", [])
-            + buyer.get("aliases", [])
-            + [buyer.get("name_en", ""), buyer.get("name_ru", "")]
-        )
-        for name in all_names:
-            norm_name = normalize(name)
-            if not norm_name:
-                continue
-            if norm_name in norm_extracted or norm_extracted in norm_name:
-                return buyer_id
+    # ── 优先级 4：模糊匹配（法律后缀剥离后核心名相等） ──
+    # 修复（P0-1）：
+    #   (1) aliases 不参与模糊匹配——短别名（如 "GF"、"Apex"）做子串匹配会把
+    #       "GF Industrial Supply"、"Apexon" 等毫不相干的公司误匹配走。
+    #       aliases 只允许精确匹配（已由优先级 3 覆盖）。
+    #   (2) 只比对剥离法律后缀后的"核心名"是否相等：
+    #       - 多出实词（Trading / International / & Nut）→ 核心名不等 → 拒绝
+    #       - 仅法律后缀不同（Co / Corp / LLC / Ltd）→ 核心名相等 → 接受
+    #       后者是显式设计决策：现实中仅后缀不同几乎总是同一家公司；
+    #       若某客户确有 "X Co" 与 "X Corp" 两个不同法人，请把各自全名
+    #       配进 legal_names 走精确匹配，并接受模糊层无法区分它们。
+    extracted_core = _core_name(norm_extracted)
+    fuzzy_matches = []
+    if extracted_core and len(extracted_core) >= MIN_FUZZY_LEN:
+        for buyer_id, buyer in buyers.items():
+            candidate_names = (
+                buyer.get("legal_names", [])
+                + [buyer.get("name_en", ""), buyer.get("name_ru", "")]
+            )
+            for name in candidate_names:
+                name_core = _core_name(normalize(name))
+                if name_core and name_core == extracted_core:
+                    fuzzy_matches.append(buyer_id)
+                    break
 
-    # ── 优先级 5：全部未命中 → 硬阻断 ──
+    # 唯一命中才接受；多个不同 buyer 命中 → 有歧义，硬阻断交人工
+    if len(set(fuzzy_matches)) == 1:
+        return fuzzy_matches[0]
+
+    # ── 优先级 5：全部未命中 / 歧义 → 硬阻断 ──
     raise BuyerMatchError(extracted, _build_candidates(buyers))
 
 

@@ -59,15 +59,21 @@ def _normalize_description(item: dict) -> None:
         ("六角螺栓", "HEX HEAD BOLT"),
         ("六角螺母", "HEX NUT"),
         ("内六角螺钉", "HEX SOCKET HEAD CAP SCREW"),
+        ("内六角螺栓", "HEX SOCKET HEAD CAP SCREW"),
         ("自攻螺钉", "TAPPING SCREW"),
         ("盖形螺母", "CAP NUT"),
         ("法兰螺母", "FLANGE HEX NUT"),
         ("尼龙锁紧螺母", "NYLON INSERT HEX NUT"),
     ]
-    for cn, en in cn_en:
+    # 逐条替换所有命中的中文品名，不 break——
+    # 修复（P1）：原实现命中第一个词就 break，一行含多个中文品名时
+    # （如"六角螺栓配平垫圈"）只翻译第一个，其余中文原样留下，
+    # 报价单会中英文夹杂发给客户。
+    # 按长度降序排序后替换：长词（内六角螺栓）先于其子串（六角螺栓）命中，
+    # 用代码强制顺序，不依赖表的书写顺序。
+    for cn, en in sorted(cn_en, key=lambda p: len(p[0]), reverse=True):
         if cn in desc:
             desc = desc.replace(cn, en)
-            break
 
     item["description"] = desc
 

@@ -16,7 +16,7 @@ from typing import Callable
 import yaml
 
 from trade_pipeline.extractors.excel_extractor import extract
-from trade_pipeline.paths import config_path, output_root
+from trade_pipeline.paths import config_path, demo_config_path, output_root
 from trade_pipeline.understanding.llm_parser import parse
 from trade_pipeline.understanding.canonicalizer import canonicalize
 from trade_pipeline.understanding.assembler import (
@@ -75,7 +75,25 @@ def _run_precheck(model, output_dir: str, order_no: str) -> dict:
 
 def load_config() -> dict:
     with open(config_path(), "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        config = yaml.safe_load(f)
+
+    # 首启体验：模板 config.yaml 的 sellers/buyers 留空，示例实体放在
+    # examples/demo_config.yaml（见 paths.py），但此前没有任何运行路径加载它，
+    # 导致 README/SKILL.md 引导的开箱 demo 命令在 resolve_entities 硬阻断。
+    # 这里仅内存合并、不落盘——不悄悄改用户配置；一旦用户配了真实 seller 即不触发。
+    if not config.get("sellers"):
+        demo_p = demo_config_path()
+        if demo_p.exists():
+            with open(demo_p, "r", encoding="utf-8") as f:
+                demo = yaml.safe_load(f) or {}
+            config["sellers"] = demo.get("sellers") or {}
+            if not config.get("buyers"):
+                config["buyers"] = demo.get("buyers") or {}
+            print("      ⚠ config.yaml 无 seller，已临时使用示例配置"
+                  "（examples/demo_config.yaml，仅本次运行生效）。"
+                  "真实业务请先运行「初始化配置」。")
+
+    return config
 
 
 def _emit(progress: ProgressFn | None, msg: str):
@@ -107,6 +125,9 @@ def _extract_and_parse(input_path: str, use_llm: bool,
     print(f"[2/{total_steps}] 解析询价单 ({'LLM' if use_llm else '规则'}模式)")
     rfq = parse(doc, use_llm=use_llm, cache_dir=l2_cache_dir)
     print(f"      产品: {len(rfq.get('items', []))} 条 | 货币: {rfq.get('currency', '?')}")
+    if rfq.get("_llm_degraded"):
+        print("      ⚠ 本次为降级结果：LLM 解析失败，已回退到规则模式，精度可能低于预期，请核对输出")
+        print(f"        原因: {rfq.get('_llm_degraded_reason', '未知')}")
 
     rfq_path = str(Path(output_dir) / f"{order_no}_rfq.json")
     with open(rfq_path, "w", encoding="utf-8") as f:

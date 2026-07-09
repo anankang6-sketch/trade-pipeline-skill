@@ -172,3 +172,30 @@ def test_writeback_with_missing_uuid():
         assert len(result["errors"]) >= 1
     finally:
         Path(path).unlink(missing_ok=True)
+
+
+def test_missing_price_column_raises_instead_of_fallback():
+    """遗漏4 修复的回归防线：找不到单价列必须硬阻断（PriceUpdateError），
+    绝不能 fallback 到固定列号从错误列读数当单价回写。"""
+    import pytest
+    from openpyxl import Workbook
+    from trade_pipeline.pipeline.price_updater import PriceUpdateError
+
+    model = _make_model(_make_items())
+
+    wb = Workbook()
+    ws = wb.active
+    # 有 uuid 列，但表头没有任何含 'Price' 的列
+    ws.cell(1, 1, "Item")
+    ws.cell(1, 2, "__item_uuid__")
+    ws.cell(2, 1, "HEX BOLT M8x25")
+    ws.cell(2, 2, "aaa111")
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as f:
+        path = f.name
+    try:
+        wb.save(path)
+        wb.close()
+        with pytest.raises(PriceUpdateError, match="单价列"):
+            update_prices(model, path)
+    finally:
+        Path(path).unlink(missing_ok=True)

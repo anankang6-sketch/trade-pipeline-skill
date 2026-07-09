@@ -24,9 +24,13 @@ def _find_uuid_column(ws) -> int | None:
     return None
 
 
-def _find_price_column(ws, uuid_col: int) -> int:
-    """找到单价列（列头含 'Unit Price' 或 'Price'）"""
-    # 扫描 uuid_col_header 所在行
+def _find_price_column(ws, uuid_col: int) -> int | None:
+    """找到单价列（列头含 'Unit Price' 或 'Price'）。找不到返回 None。
+
+    修复（遗漏4）：原实现找不到时 fallback 到硬编码第 6 列(F)，会在用户
+    调整了报价单列顺序时静默从错误列读数当单价回写——这正是本模块开头
+    禁止的"行号/offset 方式"。改为返回 None，由调用方硬阻断。
+    """
     for row in range(1, min(ws.max_row + 1, 21)):
         if ws.cell(row, uuid_col).value == UUID_COL_HEADER:
             # 同一行扫描其他列找 Price
@@ -37,8 +41,7 @@ def _find_price_column(ws, uuid_col: int) -> int:
                 if "price" in val.lower():
                     return col
             break
-    # fallback：第 6 列(F)
-    return 6
+    return None
 
 
 def update_prices(model, quotation_path: str) -> dict:
@@ -68,6 +71,11 @@ def update_prices(model, quotation_path: str) -> dict:
 
     # 找单价列
     price_col = _find_price_column(ws, uuid_col)
+    if price_col is None:
+        raise PriceUpdateError(
+            f"报价单 '{quotation_path}' 中未找到单价列（列头需含 'Price'）。"
+            f"请确认该报价单由 quote_writer 生成且单价列表头未被删改。"
+        )
 
     # 构建 uuid → Excel 行号映射
     uuid_to_row: dict[str, int] = {}

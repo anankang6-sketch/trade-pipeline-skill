@@ -372,6 +372,8 @@ def _parse_with_llm(doc: ExtractedDocument, cache_dir: str | None = None) -> dic
         print("WARNING: ANTHROPIC_API_KEY 未设置，回退到规则模式")
         return _parse_with_rules(doc)
 
+    # ── 第一段：API 调用（网络/超时/认证/限流错误 → 容灾 fallback） ──
+    # 这类错误是"环境问题"，静默回退到规则模式是合理的容灾。
     try:
         client_kwargs = {"api_key": api_key}
         if base_url:
@@ -388,7 +390,17 @@ def _parse_with_llm(doc: ExtractedDocument, cache_dir: str | None = None) -> dic
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": content}],
         )
+    except anthropic.APIError as e:
+        # APIError 覆盖连接错误(APIConnectionError)、HTTP 状态错误(APIStatusError,
+        # 含 401/429/5xx)、超时(APITimeoutError)。属环境问题，容灾回退。
+        print(f"WARNING: Claude API 调用失败 ({e})，回退到规则模式")
+        return _parse_with_rules(doc)
 
+    # ── 第二段：响应解析（数据错误 → 回退但显式标记降级，不静默） ──
+    # 与 API 错误不同：这里 API 已成功返回，但返回内容不符合预期。
+    # 静默退回规则模式会让用户以为拿到了 LLM 精度，实际是降级结果——
+    # 属"数据污染的隐形通道"。因此回退时必须在结果上打降级标记。
+    try:
         result_text = response.content[0].text.strip()
         # 提取 JSON（可能被 markdown 包裹）
         if "```json" in result_text:
@@ -397,21 +409,32 @@ def _parse_with_llm(doc: ExtractedDocument, cache_dir: str | None = None) -> dic
             result_text = result_text.split("```")[1].split("```")[0]
 
         rfq = json.loads(result_text)
+        if not isinstance(rfq, dict):
+            raise ValueError(f"LLM 返回顶层不是 JSON object: {type(rfq).__name__}")
+    except (IndexError, AttributeError, TypeError, ValueError) as e:
+        # 响应格式非预期：回退到规则模式，但显式标记，供上层提示用户。
+        print(
+            f"WARNING: Claude API 返回无法解析 ({e})，回退到规则模式。"
+            f"\n         注意：本次为降级结果，精度可能低于预期，请核对输出。"
+        )
+        fallback = _parse_with_rules(doc)
+        fallback["_llm_degraded"] = True
+        fallback["_llm_degraded_reason"] = f"LLM 响应解析失败: {e}"
+        return fallback
 
-        # 补充必要字段
-        rfq.setdefault("source_file", doc.source_path)
-        rfq.setdefault("has_weight", False)
-        rfq.setdefault("price_unit", "CNY/MPCS")
+    # 补充必要字段
+    rfq.setdefault("source_file", doc.source_path)
+    rfq.setdefault("has_weight", False)
+    rfq.setdefault("price_unit", "CNY/MPCS")
 
-        # L2 缓存写入
-        if cache:
+    # L2 缓存写入。缓存只是优化，写盘失败（磁盘满/权限）不应让解析结果作废。
+    if cache:
+        try:
             cache.put(doc.content_hash, MODEL_NAME, rfq)
+        except OSError as e:
+            print(f"WARNING: L2 缓存写入失败 ({e})，本次解析结果不缓存")
 
-        return rfq
-
-    except Exception as e:
-        print(f"WARNING: Claude API 调用失败 ({e})，回退到规则模式")
-        return _parse_with_rules(doc)
+    return rfq
 
 
 # ── 辅助函数 ───────────────────────────────────────────────────────────
