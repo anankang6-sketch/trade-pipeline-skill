@@ -36,18 +36,25 @@ _TENS = ["", "", "TWENTY", "THIRTY", "FORTY", "FIFTY",
          "SIXTY", "SEVENTY", "EIGHTY", "NINETY"]
 
 
+# 量级词从大到小排列，_num_to_words 依次剥离，保证每个量级词只出现一次且合法。
+_SCALES = [
+    (1_000_000_000_000, "TRILLION"),
+    (1_000_000_000, "BILLION"),
+    (1_000_000, "MILLION"),
+    (1000, "THOUSAND"),
+]
+
+
 def _num_to_words(n: int) -> str:
     if n == 0:
         return "ZERO"
     if n < 0:
         return "MINUS " + _num_to_words(-n)
     parts = []
-    if n >= 1_000_000:
-        parts.append(_num_to_words(n // 1_000_000) + " MILLION")
-        n %= 1_000_000
-    if n >= 1000:
-        parts.append(_num_to_words(n // 1000) + " THOUSAND")
-        n %= 1000
+    for scale, name in _SCALES:
+        if n >= scale:
+            parts.append(_num_to_words(n // scale) + " " + name)
+            n %= scale
     if n >= 100:
         parts.append(_ONES[n // 100] + " HUNDRED")
         n %= 100
@@ -62,11 +69,24 @@ def _num_to_words(n: int) -> str:
 
 
 def amount_to_words(amount: float, currency: str = "USD") -> str:
-    integer_part = int(amount)
-    decimal_part = round((amount - integer_part) * 100)
-    words = f"{currency} " + _num_to_words(integer_part)
-    if decimal_part > 0:
-        words += " AND " + _num_to_words(decimal_part) + " CENTS"
+    """Render a monetary amount as an English words string.
+
+    整数分运算杜绝浮点/边界失真（T2）：
+      - total_cents = round(|amount| * 100) 后用 divmod 拆整数位与分位，
+        cents 恒在 0..99（0.995 会正确进位到整数位，不再出现 "ONE HUNDRED CENTS"）。
+      - 负数统一前缀 MINUS（放在币种之后，如 "USD MINUS FIVE ..."），
+        分位由绝对值取得，不会丢失（-5.5 → 5 元 50 分）。
+    """
+    negative = amount < 0
+    total_cents = int(round(abs(amount) * 100))
+    integer_part, cents = divmod(total_cents, 100)
+
+    words = f"{currency} "
+    if negative and total_cents > 0:
+        words += "MINUS "
+    words += _num_to_words(integer_part)
+    if cents > 0:
+        words += " AND " + _num_to_words(cents) + " CENTS"
     words += " ONLY"
     return words
 
@@ -268,7 +288,7 @@ class CIWriter(BaseWriter):
                 weight_cell=f"{col_O}{R}",
                 price_cell=f"{col_P}{R}",
             )
-            _sc(ws, R, 17, value=formula,
+            _sc(ws, R, 17, value=formula, formula=True,
                 font=_fnt(10), align=_aln("right"), num_fmt='#,##0.00')
 
             # 累计金额（与公式同源，杜绝显示值与大写金额不一致）
@@ -290,15 +310,15 @@ class CIWriter(BaseWriter):
 
         # ── TOTAL 行 ──
         _sc(ws, R, 3, value="TOTAL:", font=_fnt(12), align=_aln("left"))
-        _sc(ws, R, 14, value=f"=SUM(N{DATA_START}:N{DATA_END})",
+        _sc(ws, R, 14, value=f"=SUM(N{DATA_START}:N{DATA_END})", formula=True,
             font=_fnt(12), align=_aln("right"),
             border=_brd(left="thin", top="thin", bottom="thin"), num_fmt='#,##0')
-        _sc(ws, R, 15, value=f"=SUM(O{DATA_START}:O{DATA_END})",
+        _sc(ws, R, 15, value=f"=SUM(O{DATA_START}:O{DATA_END})", formula=True,
             font=_fnt(12), align=_aln("right"),
             border=_brd(left="thin", top="thin", bottom="thin"), num_fmt='#,##0.00')
         _sc(ws, R, 16, value=currency, font=_fnt(12), align=_aln("right"),
             border=_brd(left="thin", right="thin", top="thin", bottom="thin"))
-        _sc(ws, R, 17, value=f"=SUM(Q{DATA_START}:Q{DATA_END})",
+        _sc(ws, R, 17, value=f"=SUM(Q{DATA_START}:Q{DATA_END})", formula=True,
             font=_fnt(12), align=_aln("right"),
             border=_brd(left="thin", top="thin", bottom="thin"), num_fmt='#,##0.00')
         ws.row_dimensions[R].height = 18.6
@@ -334,5 +354,7 @@ class CIWriter(BaseWriter):
             "ci_number": model.order.ci_number,
             "total_amount": round(total_amount, 2),
             "total_net_weight": round(nw, 2),
+            # T1: 暴露 CI 页脚的毛重（读 derived 真值或走兜底），供跨单校验比对
+            "total_gross_weight": round(gw, 2),
             "output_path": output_path,
         }

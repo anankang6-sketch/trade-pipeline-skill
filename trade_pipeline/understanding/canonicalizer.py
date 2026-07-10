@@ -129,10 +129,12 @@ def _extract_group_key(item: dict) -> None:
         ptype = "CHAMFERED HEXAGON THIN NUT"
     elif "CAP NUT" in desc_upper:
         ptype = "CAP NUT"
-    elif "WASHER" in desc_upper or "垫圈" in desc_upper:
-        ptype = "FLAT WASHER"
+    # 具体品类必须排在通用 "WASHER" 之前，否则被通用分支遮蔽（T7）：
+    # "SPRING LOCK WASHER" 含子串 "WASHER"，放后面永远不可达。
     elif "SPRING LOCK WASHER" in desc_upper or "DIN7980" in desc_upper.replace(" ", ""):
         ptype = "SPRING LOCK WASHER"
+    elif "WASHER" in desc_upper or "垫圈" in desc_upper:
+        ptype = "FLAT WASHER"
     elif "TAPPING" in desc_upper:
         ptype = "TAPPING SCREW"
     else:

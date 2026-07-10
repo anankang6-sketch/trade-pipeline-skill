@@ -241,7 +241,7 @@ class PIWriter(BaseWriter):
                 weight_cell=f"{col_M}{R}",
                 price_cell=f"{col_N}{R}",
             )
-            _sc(ws, R, 15, value=formula,
+            _sc(ws, R, 15, value=formula, formula=True,
                 font=_fnt(CALIBRI, 11), align=_aln("right"),
                 border=_brd(left="thin"),
                 num_fmt="#,##0.00")
@@ -259,13 +259,13 @@ class PIWriter(BaseWriter):
         _sc(ws, R, 1, value="TOTAL:",
             font=_fnt(CALIBRI, 10, bold=True), border=tb)
         _sc(ws, R, 12, border=tblr)
-        _sc(ws, R, 13, value=f"=SUM(M{DATA_START}:M{DATA_END})",
+        _sc(ws, R, 13, value=f"=SUM(M{DATA_START}:M{DATA_END})", formula=True,
             font=_fnt(CALIBRI, 10, bold=True), align=_aln("right"),
             border=tblr, num_fmt="#,##0.00")
         _sc(ws, R, 14, value=model.order.currency,
             font=_fnt(CALIBRI, 10, bold=True), align=_aln("right"),
             border=tblr)
-        _sc(ws, R, 15, value=f"=SUM(O{DATA_START}:O{DATA_END})",
+        _sc(ws, R, 15, value=f"=SUM(O{DATA_START}:O{DATA_END})", formula=True,
             font=_fnt(CALIBRI, 10, bold=True), align=_aln("right"),
             border=tbl, num_fmt="#,##0.00")
         _rh(ws, R, 15)

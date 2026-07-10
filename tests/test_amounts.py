@@ -17,7 +17,7 @@ from trade_pipeline.models.amounts import (
     compute_amount,
     amount_formula,
 )
-from trade_pipeline.writers.ci_writer import CIWriter
+from trade_pipeline.writers.ci_writer import CIWriter, amount_to_words
 
 from tests.conftest import make_resolved_model, SAMPLE_CONFIG
 
@@ -188,3 +188,47 @@ def test_pi_ci_numeric_consistency_via_compute_amount():
             # 金额对每个 (item, price_unit) 是确定单值 → PI/CI 必然一致
             assert isinstance(amt, float)
             assert amt >= 0
+
+
+# ── amount_to_words 边界 / 负数 / 量级（T2）────────────────────────
+
+
+def test_amount_to_words_cents_carry():
+    """0.995 舍入到 1.00：分位进位到整数位，不再出现 'ONE HUNDRED CENTS'。"""
+    assert amount_to_words(0.995, "USD") == "USD ONE ONLY"
+    assert "HUNDRED CENTS" not in amount_to_words(0.995, "USD")
+
+
+def test_amount_to_words_near_integer_carry():
+    """999.995 舍入到 1000.00：进位跨千位，输出整千。"""
+    assert amount_to_words(999.995, "USD") == "USD ONE THOUSAND ONLY"
+
+
+def test_amount_to_words_negative():
+    """负数：MINUS 前缀 + 分位不失真（-5.5 → 5 元 50 分）。"""
+    assert amount_to_words(-5.5, "USD") == "USD MINUS FIVE AND FIFTY CENTS ONLY"
+
+
+def test_amount_to_words_billion():
+    """十亿：含 BILLION，量级词合法。"""
+    assert amount_to_words(1_000_000_000, "USD") == "USD ONE BILLION ONLY"
+
+
+def test_amount_to_words_trillion_scale():
+    """2**40 ≈ 1.1 万亿：TRILLION/BILLION/MILLION/THOUSAND 各只出现一次。"""
+    words = amount_to_words(2 ** 40, "USD")
+    assert "TRILLION" in words
+    for scale in ("TRILLION", "BILLION", "MILLION", "THOUSAND"):
+        assert words.count(scale) == 1, f"{scale} 应只出现一次: {words}"
+
+
+def test_amount_to_words_zero_and_subcent():
+    """0 与小于半分（0.004）：都渲染为 ZERO，无 MINUS、无 CENTS。"""
+    assert amount_to_words(0, "USD") == "USD ZERO ONLY"
+    assert amount_to_words(0.004, "USD") == "USD ZERO ONLY"
+    assert "MINUS" not in amount_to_words(0.004, "USD")
+
+
+def test_amount_to_words_exact_cents():
+    """100.10：整数位 + 10 分，分位不被浮点吃掉。"""
+    assert amount_to_words(100.10, "USD") == "USD ONE HUNDRED AND TEN CENTS ONLY"

@@ -32,6 +32,7 @@ from trade_pipeline.validation.manual_completion import (
     ReviewItem, apply_review, generate_review,
 )
 from trade_pipeline.validation.engine import validate_order
+from trade_pipeline.validation.cross_doc import check_ci_pl_gross_weight
 from trade_pipeline.validation.reporters import to_markdown, to_text
 
 ProgressFn = Callable[[str], None]
@@ -242,10 +243,15 @@ def _write_quotation(model, config: dict, output_dir: str, order_no: str,
 
 def _write_trade_docs(model, config: dict, output_dir: str, order_no: str,
                       total_steps: int, packing_review=None) -> dict:
-    """Steps 6-8: PI + CI + PL generation.
+    """Steps 6-8: PI + PL + CI generation.
 
     v1.1.0: 接受可选 packing_review（PackingReview 对象）传给 PLWriter。
     PackingInfoMissingError 时自动生成 review.json，供用户填写 + --confirm-packing 重跑。
+
+    T1 修复：PL 必须在 CI 之前生成。PLWriterLite 是唯一按托盘数算真实毛重并
+    回写 model.derived.total_gross_weight 的环节；CI 页脚 G.W. 读该真值（PL 缺失
+    时才走 nw*1.036 兜底）。此前 CI 先于 PL → derived 恒为 None → CI 永远走兜底，
+    与 PL 的真值系统性不一致。故生成顺序调整为 PI → PL → CI。
     """
     results = {"outputs": {}, "warnings": []}
 
@@ -262,24 +268,13 @@ def _write_trade_docs(model, config: dict, output_dir: str, order_no: str,
         results["warnings"].append(msg)
         print(f"      ⚠ {msg}")
 
-    print(f"[7/{total_steps}] 生成 CI 商业发票")
-    ci_path = str(Path(output_dir) / f"{order_no}_ci.xlsx")
-    try:
-        ci_writer = CIWriter(model, config)
-        ci_info = ci_writer.write(ci_path)
-        results["outputs"]["ci_xlsx"] = ci_path
-        print(f"      → {ci_path}")
-        print(f"      CI No.: {ci_info['ci_number']} | 金额: {model.order.currency} {ci_info['total_amount']:,.2f}")
-    except Exception as e:
-        msg = f"CI 生成失败: {type(e).__name__}: {e}"
-        results["warnings"].append(msg)
-        print(f"      ⚠ {msg}")
-
-    print(f"[8/{total_steps}] 生成 PL 装箱单")
+    # PL 先于 CI：回写 model.derived.total_gross_weight，供 CI 读真值（T1）。
+    print(f"[7/{total_steps}] 生成 PL 装箱单")
     pl_writer = PLWriter(model, config)
     pl_kwargs = {}
     if packing_review is not None:
         pl_kwargs["packing_review"] = packing_review
+    pl_result = None
     try:
         pl_result = pl_writer.write(
             str(Path(output_dir) / f"{order_no}_pl.xlsx"),
@@ -320,6 +315,27 @@ def _write_trade_docs(model, config: dict, output_dir: str, order_no: str,
             msg = f"PL 生成异常: {type(e).__name__}: {e}"
             results["warnings"].append(msg)
             print(f"      ⚠ {msg}")
+
+    # CI 在 PL 之后：读 model.derived.total_gross_weight 真值（T1）。
+    print(f"[8/{total_steps}] 生成 CI 商业发票")
+    ci_path = str(Path(output_dir) / f"{order_no}_ci.xlsx")
+    ci_info = None
+    try:
+        ci_writer = CIWriter(model, config)
+        ci_info = ci_writer.write(ci_path)
+        results["outputs"]["ci_xlsx"] = ci_path
+        print(f"      → {ci_path}")
+        print(f"      CI No.: {ci_info['ci_number']} | 金额: {model.order.currency} {ci_info['total_amount']:,.2f}")
+    except Exception as e:
+        msg = f"CI 生成失败: {type(e).__name__}: {e}"
+        results["warnings"].append(msg)
+        print(f"      ⚠ {msg}")
+
+    # 跨单校验：CI 毛重必须等于 PL 毛重（T1）。两者都成功时才比对。
+    gw_warn = check_ci_pl_gross_weight(ci_info, pl_result)
+    if gw_warn:
+        results["warnings"].append(gw_warn)
+        print(f"      ⚠ {gw_warn}")
 
     return results
 
@@ -670,20 +686,9 @@ def run_price_update(
         print(f"  ⚠ PI 重新生成失败: {type(e).__name__}: {e}")
         result.setdefault("warnings", []).append(f"PI: {e}")
 
-    # CI
-    ci_path = str(Path(output_dir) / f"{model.order.order_no}_ci.xlsx")
-    try:
-        ci_writer = CIWriter(model, config)
-        ci_info = ci_writer.write(ci_path)
-        print(f"  → CI 已重新生成: {ci_path}")
-        print(f"     CI No.: {ci_info['ci_number']} | 金额: {model.order.currency} {ci_info['total_amount']:,.2f}")
-        result["ci_path"] = ci_path
-    except Exception as e:
-        print(f"  ⚠ CI 重新生成失败: {type(e).__name__}: {e}")
-        result.setdefault("warnings", []).append(f"CI: {e}")
-
-    # PL
+    # PL 先于 CI：回写 model.derived.total_gross_weight，供 CI 读真值（T1）。
     pl_path = str(Path(output_dir) / f"{model.order.order_no}_pl.xlsx")
+    pl_result = None
     try:
         pl_writer = PLWriter(model, config)
         pl_kwargs = {}
@@ -720,6 +725,25 @@ def run_price_update(
         else:
             print(f"  ⚠ PL 异常: {type(e).__name__}: {e}")
         result.setdefault("warnings", []).append(f"PL: {e}")
+
+    # CI 在 PL 之后：读 model.derived.total_gross_weight 真值（T1）。
+    ci_path = str(Path(output_dir) / f"{model.order.order_no}_ci.xlsx")
+    ci_info = None
+    try:
+        ci_writer = CIWriter(model, config)
+        ci_info = ci_writer.write(ci_path)
+        print(f"  → CI 已重新生成: {ci_path}")
+        print(f"     CI No.: {ci_info['ci_number']} | 金额: {model.order.currency} {ci_info['total_amount']:,.2f}")
+        result["ci_path"] = ci_path
+    except Exception as e:
+        print(f"  ⚠ CI 重新生成失败: {type(e).__name__}: {e}")
+        result.setdefault("warnings", []).append(f"CI: {e}")
+
+    # 跨单校验：CI 毛重必须等于 PL 毛重（T1）。
+    gw_warn = check_ci_pl_gross_weight(ci_info, pl_result)
+    if gw_warn:
+        result.setdefault("warnings", []).append(gw_warn)
+        print(f"  ⚠ {gw_warn}")
 
     return result
 

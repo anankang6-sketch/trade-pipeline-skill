@@ -8,12 +8,36 @@ from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 
 FONT_NAME = "Calibri"
 
+# 公式注入（CSV/Formula injection）净化：openpyxl 会把以这些字符开头的
+# 字符串当作 Excel 公式写入（data_type='f'），打开时可能触发命令/取数攻击
+# （如 =cmd|'/c calc'!A1、=HYPERLINK(...)）。对来自输入数据的字符串值，
+# 前置一个单引号强制转为文本，Excel 显示时不带该引号。
+# 我们“主动写的公式”（金额 =SUM/=.. ）通过 formula=True 显式豁免。
+_FORMULA_TRIGGERS = ("=", "+", "-", "@")
 
-def sc(ws, r, c, value=None, font=None, align=None, border=None, num_fmt=None):
-    """Set cell: write value and apply styles to a single cell."""
+
+def _sanitize(value, formula: bool):
+    """对字符串输入做公式注入净化；formula=True 表示这是刻意写的公式，原样保留。
+
+    非字符串（数字/日期/None）不处理。以触发字符开头的字符串前置 `'`。
+    """
+    if formula or not isinstance(value, str):
+        return value
+    if value and value[0] in _FORMULA_TRIGGERS:
+        return "'" + value
+    return value
+
+
+def sc(ws, r, c, value=None, font=None, align=None, border=None, num_fmt=None,
+       formula=False):
+    """Set cell: write value and apply styles to a single cell.
+
+    formula=True：value 是刻意写入的 Excel 公式（如金额 =SUM/=..），
+    跳过公式注入净化。默认 False（把来自输入数据的可疑字符串转为文本）。
+    """
     cell = ws.cell(row=r, column=c)
     if value is not None:
-        cell.value = value
+        cell.value = _sanitize(value, formula)
     if font:
         cell.font = font
     if align:
@@ -25,13 +49,16 @@ def sc(ws, r, c, value=None, font=None, align=None, border=None, num_fmt=None):
     return cell
 
 
-def mc(ws, r1, c1, r2, c2, value=None, font=None, align=None):
-    """Merge cells and set value/style on the top-left cell."""
+def mc(ws, r1, c1, r2, c2, value=None, font=None, align=None, formula=False):
+    """Merge cells and set value/style on the top-left cell.
+
+    formula=True 时跳过公式注入净化（默认净化，见 _sanitize）。
+    """
     if not (r1 == r2 and c1 == c2):
         ws.merge_cells(start_row=r1, start_column=c1, end_row=r2, end_column=c2)
     cell = ws.cell(row=r1, column=c1)
     if value is not None:
-        cell.value = value
+        cell.value = _sanitize(value, formula)
     if font:
         cell.font = font
     if align:

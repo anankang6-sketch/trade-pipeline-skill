@@ -8,6 +8,7 @@
   - reporter 输出中文 Markdown / 纯文本报告
 """
 from tests.conftest import make_model, make_resolved_model
+from trade_pipeline.validation.cross_doc import check_ci_pl_gross_weight
 from trade_pipeline.validation.engine import validate_order
 from trade_pipeline.validation.models import Severity
 from trade_pipeline.validation.reporters import to_markdown, to_text
@@ -183,3 +184,34 @@ def test_report_severity_views_partition_results():
     report = validate_order(model)
     assert len(report.errors) + len(report.warnings) + len(report.infos) == len(report.results)
     assert all(r.severity is Severity.ERROR for r in report.errors)
+
+
+# ── 跨单据毛重一致校验（T1, validation/cross_doc.py）─────────────
+
+
+def test_cross_doc_gw_equal_returns_none():
+    """CI 与 PL 毛重相等（含 0.01 容差内）→ 无 warning。"""
+    ci = {"total_gross_weight": 1234.56}
+    pl = {"success": True, "total_gross_weight": 1234.56}
+    assert check_ci_pl_gross_weight(ci, pl) is None
+    # 容差内
+    assert check_ci_pl_gross_weight({"total_gross_weight": 1234.56},
+                                    {"success": True, "total_gross_weight": 1234.57}) is None
+
+
+def test_cross_doc_gw_mismatch_returns_warning():
+    """毛重不一致 → 返回中文 warning 文案。"""
+    ci = {"total_gross_weight": 1000.00}  # 例如走了 nw*1.036 兜底
+    pl = {"success": True, "total_gross_weight": 1050.00}
+    msg = check_ci_pl_gross_weight(ci, pl)
+    assert msg is not None
+    assert "不一致" in msg
+
+
+def test_cross_doc_gw_skips_when_pl_failed_or_missing():
+    """任一单据缺失 / PL 未成功 → 不比对，返回 None（不误报）。"""
+    ci = {"total_gross_weight": 1000.0}
+    assert check_ci_pl_gross_weight(ci, None) is None
+    assert check_ci_pl_gross_weight(None, {"success": True, "total_gross_weight": 1000.0}) is None
+    assert check_ci_pl_gross_weight(ci, {"success": False}) is None
+    assert check_ci_pl_gross_weight(ci, {"success": True, "total_gross_weight": None}) is None

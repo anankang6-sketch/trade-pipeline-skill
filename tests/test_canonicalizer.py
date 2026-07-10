@@ -42,6 +42,29 @@ def test_group_key_extraction():
     assert "HEX HEAD BOLT" in gk
 
 
+def test_group_key_spring_lock_washer_not_shadowed_by_washer():
+    """T7: 'SPRING LOCK WASHER' 含子串 'WASHER'，必须归到 SPRING LOCK WASHER
+    而非被通用 WASHER 分支抢先归为 FLAT WASHER。"""
+    rfq = {"items": [
+        {"description": "SPRING LOCK WASHER DIN 127 M10 ZP", "standard": "DIN 127"},
+    ]}
+    result = canonicalize(rfq)
+    gk = result["items"][0].get("group_key", "")
+    assert "SPRING LOCK WASHER" in gk
+    assert "FLAT WASHER" not in gk
+
+
+def test_group_key_plain_washer_still_flat():
+    """回归：普通 WASHER 仍归 FLAT WASHER（未被 SPRING LOCK 分支误抢）。"""
+    rfq = {"items": [
+        {"description": "FLAT WASHER DIN 125 M8 ZP", "standard": "DIN 125"},
+    ]}
+    result = canonicalize(rfq)
+    gk = result["items"][0].get("group_key", "")
+    assert "FLAT WASHER" in gk
+    assert "SPRING LOCK WASHER" not in gk
+
+
 def test_unit_normalization():
     rfq = {"format": "standard", "items": [
         {"description": "BOLT", "standard": None, "unit": "шт"},

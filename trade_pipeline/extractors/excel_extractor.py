@@ -17,6 +17,35 @@ from ..understanding.cache import ExtractorCache
 
 EXTRACTOR_VERSION = "1.0"
 
+# 读取上限（T6）：防御异常大 / 恶意膨胀的 Excel 拖垮内存或耗尽 CPU
+# （zip bomb、超大 sheet）。超限直接抛清晰异常，让调用方给出可读提示。
+MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024   # 20 MB
+MAX_ROWS = 5000
+
+
+class FileTooLargeError(Exception):
+    """询价单文件超过大小 / 行数上限。"""
+
+
+def _check_file_size(path: Path) -> None:
+    """校验磁盘文件大小不超过 MAX_FILE_SIZE_BYTES。"""
+    size = path.stat().st_size
+    if size > MAX_FILE_SIZE_BYTES:
+        raise FileTooLargeError(
+            f"询价单文件过大：{size / 1024 / 1024:.1f} MB，"
+            f"超过上限 {MAX_FILE_SIZE_BYTES // 1024 // 1024} MB。"
+            "请确认文件是否为正常询价单（可拆分或另存为精简 xlsx 后重试）。"
+        )
+
+
+def _check_row_count(ws) -> None:
+    """校验 sheet 行数不超过 MAX_ROWS。"""
+    if ws.max_row > MAX_ROWS:
+        raise FileTooLargeError(
+            f"询价单行数过多：{ws.max_row} 行，超过上限 {MAX_ROWS} 行。"
+            "请确认是否包含大量空行 / 无关数据（清理后重试，或拆分为多个订单）。"
+        )
+
 
 def detect_format(ws) -> str:
     """检测询价单格式: 'standard' 或 'washers_mar'"""
@@ -124,6 +153,9 @@ def extract(file_path: str, cache_dir: str | None = None) -> ExtractedDocument:
     """
     path = Path(file_path)
 
+    # 读取上限：先查文件大小（T6），避免把超大文件读进 openpyxl
+    _check_file_size(path)
+
     # L1 缓存检查
     cache = None
     file_hash = None
@@ -147,6 +179,10 @@ def extract(file_path: str, cache_dir: str | None = None) -> ExtractedDocument:
 
     wb = load_workbook(str(path), data_only=True)
     ws = select_best_sheet(wb)
+    # 读取上限：选定 sheet 后查行数（T6）。read_only 与既有代码不兼容
+    # （detect_format / _score_sheet / iter_rows 会多次遍历并随机访问 cell，
+    # read_only 模式下这些会失效或性能反劣），故只加上限检查，不切 read_only。
+    _check_row_count(ws)
     fmt = detect_format(ws)
 
     # 构建文本和表格数据

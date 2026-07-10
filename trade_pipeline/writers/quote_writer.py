@@ -9,7 +9,7 @@ from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.properties import WorksheetProperties, PageSetupProperties
 
-from .base_writer import BaseWriter
+from .base_writer import BaseWriter, _sanitize
 
 FONT_NAME = "Calibri"
 HEADER_COLOR = "1F3864"
@@ -38,7 +38,8 @@ def _mc(ws, r, c1, c2, value=None, font=None, align=None):
         ws.merge_cells(start_row=r, start_column=c1, end_row=r, end_column=c2)
     cell = ws.cell(r, c1)
     if value is not None:
-        cell.value = value
+        # 公式注入净化（T3）：quote_writer 不走 base_writer.sc，需自行净化。
+        cell.value = _sanitize(value, formula=False)
     if font:
         cell.font = font
     if align:
@@ -161,7 +162,8 @@ class QuoteWriter(BaseWriter):
         if buyer_name:
             ws.row_dimensions[row].height = 16
             ws.cell(row, 1, "To:").font = _fnt(9, True)
-            ws.cell(row, 2, buyer_name).font = _fnt(9, True)
+            # 公式注入净化（T3）：买方名可能含 = / @ 等触发字符
+            ws.cell(row, 2, _sanitize(buyer_name, formula=False)).font = _fnt(9, True)
             row += 1
 
         ws.row_dimensions[row].height = 6
@@ -192,7 +194,8 @@ class QuoteWriter(BaseWriter):
                     getattr(item, "qty_box", None)]
 
             for col_i, v in enumerate(vals, 1):
-                c = ws.cell(row, col_i, v)
+                # 公式注入净化（T3）：description/barcode 等来自输入数据的字符串
+                c = ws.cell(row, col_i, _sanitize(v, formula=False))
                 c.font = _fnt()
                 c.border = Border(bottom=_thin())
                 if col_i == 5:

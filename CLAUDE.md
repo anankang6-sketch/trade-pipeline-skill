@@ -24,6 +24,13 @@ trade_pipeline/
 └── config/         # config.yaml (sellers, buyers, terms, formats)
 ```
 
+## Privacy: `--use-llm`
+
+The optional `--use-llm` flag sends the raw inquiry content (customer name, products, quantities)
+to the Anthropic API for parsing. It is **off by default and opt-in**. The default rule-based
+parser runs fully offline and sends nothing over the network. Avoid `--use-llm` for sensitive or
+confidential documents.
+
 ## Key Rules
 
 - **All Writers read from OrderModel only** — never re-parse Excel in a Writer
