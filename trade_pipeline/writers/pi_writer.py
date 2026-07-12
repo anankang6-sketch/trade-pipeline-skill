@@ -14,7 +14,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.page import PageMargins
 
 from .base_writer import BaseWriter, sc as _sc, mc as _mc, brd as _brd, rh as _rh
-from ..models.amounts import amount_formula
+from ..models.amounts import amount_formula, PricingMode
 
 CALIBRI = "Calibri"
 
@@ -143,20 +143,22 @@ class PIWriter(BaseWriter):
 
         # ── 列头区 ──────────────────────────────────────────
 
-        # 判断是吨还是件
+        # 判断是吨 / 平方米 / 件
         is_weight_format = model.order.format == "washers_mar"
         is_per_ton = "TON" in model.order.price_unit.upper()
+        is_per_sqm = PricingMode.from_price_unit(model.order.price_unit) is PricingMode.PER_SQM
 
         if is_weight_format or is_per_ton:
             qty_label = "Qty (tons)"
-            price_label = f"Unit Price\n({model.order.price_unit})"
-            price_fmt = "#,##0.00"
+            qty_fmt = "#,##0.00"
+        elif is_per_sqm:
+            qty_label = "Qty (m²)"
             qty_fmt = "#,##0.00"
         else:
             qty_label = "Qty (pcs)"
-            price_label = f"Unit Price\n({model.order.price_unit})"
-            price_fmt = "#,##0.00"
             qty_fmt = "#,##0"
+        price_label = f"Unit Price\n({model.order.price_unit})"
+        price_fmt = "#,##0.00"
 
         from openpyxl.styles import PatternFill
         hdr_fill = PatternFill("solid", fgColor="1F3864")

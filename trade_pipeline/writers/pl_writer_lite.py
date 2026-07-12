@@ -38,27 +38,35 @@ def _aln(h="left", v="center", wrap=False):
 class PackingLine:
     description: str
     group_key: str
-    pcs: float
+    pcs: float                # 面积（㎡）
     net_weight_kg: float
-    cartons: int
-    kg_per_carton: float
+    pallets: int
+    kg_per_pallet: float
+    pallet_type: str = "wooden"
+    gross_weight_kg: float = 0.0
 
 
 def _compute_packing(
     items,
-    kg_per_carton: float = DEFAULT_KG_PER_CARTON,
-    cartons_per_pallet: int = DEFAULT_CARTONS_PER_PALLET,
-    pallet_self_weight_kg: float = DEFAULT_PALLET_SELF_WEIGHT_KG,
-    measurement_per_pallet_m3: float = DEFAULT_MEASUREMENT_PER_PALLET_M3,
+    pallet_presets: dict,
+    default_pallet: str = "wooden",
 ) -> tuple[list[PackingLine], dict]:
+    """按行分配托盘类型，逐托计算装箱（落石防护网版）。
+
+    每个 item 的 area = quantity（㎡），pallet_type 决定用哪种托盘预设
+    （wooden / metal），预设含 capacity_m2 / self_weight_kg / measurement_m3。
+    重量仅用于装箱，不参与计价。
+    """
     lines = []
-    total_pcs = 0
+    total_area = 0.0
     total_net = 0.0
-    total_cartons = 0
+    total_gross = 0.0
+    total_measurement = 0.0
+    total_pallets = 0
 
     for item in items:
         # 总净重优先级：weight_kg → weight_kg_per_piece * qty → kg_mpcs * qty/1000
-        # 注意：用 `is not None` 而非 falsy 检查，0.0 是合法重量（赠品/试样）
+        # 用 `is not None` 而非 falsy 检查，0.0 是合法重量（赠品/试样）
         nw = item.weight_kg
         if nw is None:
             wpp = getattr(item, "weight_kg_per_piece", None)
@@ -69,43 +77,41 @@ def _compute_packing(
             else:
                 nw = 0
 
-        # 箱数算法优先级：pcs_per_carton（按件） > kg_per_carton_override（覆盖）> 全局 kg_per_carton
-        # 注意：用 `is not None` 区分"用户没填"和"用户填了 0"
-        pcs_per_ctn = getattr(item, "pcs_per_carton", None)
-        kg_override = getattr(item, "kg_per_carton_override", None)
+        area = item.quantity or 0.0
+        ptype = getattr(item, "pallet_type", None) or default_pallet
+        preset = pallet_presets.get(ptype) or pallet_presets.get(default_pallet) or {}
+        cap = float(preset.get("capacity_m2", 200.0))
+        self_w = float(preset.get("self_weight_kg", 28.0))
+        meas = float(preset.get("measurement_m3", 0.528))
 
-        if pcs_per_ctn is not None and pcs_per_ctn > 0:
-            cartons = max(1, math.ceil(item.quantity / pcs_per_ctn))
-        else:
-            # 0.0 也是合法覆盖（虽然语义可疑，但 None 才表示"用全局默认"）
-            eff_kg_per_carton = kg_override if kg_override is not None and kg_override > 0 else kg_per_carton
-            cartons = max(1, math.ceil(nw / eff_kg_per_carton)) if nw > 0 else 1
-
-        kg_ctn = round(nw / cartons, 2) if cartons > 0 else 0
+        # 按面积算托盘数（每托盘可铺 capacity_m2 ㎡）
+        num_pallets = max(1, math.ceil(area / cap)) if area > 0 else 1
+        kg_per_pallet = round(nw / num_pallets, 2) if num_pallets > 0 else 0.0
+        gross = nw + num_pallets * self_w
+        measurement = num_pallets * meas
 
         lines.append(PackingLine(
             description=item.description,
             group_key=item.group_key or "",
-            pcs=item.quantity,
+            pcs=area,
             net_weight_kg=round(nw, 2),
-            cartons=cartons,
-            kg_per_carton=kg_ctn,
+            pallets=num_pallets,
+            kg_per_pallet=kg_per_pallet,
+            pallet_type=ptype,
+            gross_weight_kg=round(gross, 2),
         ))
-        total_pcs += item.quantity
+        total_area += area
         total_net += nw
-        total_cartons += cartons
-
-    total_pallets = max(1, math.ceil(total_cartons / cartons_per_pallet))
-    total_gross = round(total_net + total_pallets * pallet_self_weight_kg, 2)
-    total_measurement = round(total_pallets * measurement_per_pallet_m3, 2)
+        total_pallets += num_pallets
+        total_gross += gross
+        total_measurement += measurement
 
     summary = {
-        "total_pcs": total_pcs,
+        "total_pcs": total_area,
         "total_net_weight": round(total_net, 2),
-        "total_gross_weight": total_gross,
-        "total_cartons": total_cartons,
+        "total_gross_weight": round(total_gross, 2),
         "total_pallets": total_pallets,
-        "total_measurement_m3": total_measurement,
+        "total_measurement_m3": round(total_measurement, 2),
     }
     return lines, summary
 
@@ -170,25 +176,18 @@ class PLWriterLite(BaseWriter):
         review = kwargs.get("packing_review")
 
         packing_cfg = (self.config or {}).get("packing", {})
-        # 优先级：review.pallet > config.packing > module defaults
-        eff_kg_per_carton = packing_cfg.get("carton_weight_kg", DEFAULT_KG_PER_CARTON)
-        eff_cartons_per_pallet = (
-            review.pallet.cartons_per_pallet if review and review.pallet
-            else packing_cfg.get("cartons_per_pallet", DEFAULT_CARTONS_PER_PALLET)
-        )
-        eff_pallet_self_weight = (
-            review.pallet.self_weight_kg if review and review.pallet
-            else packing_cfg.get("pallet_self_weight_kg", DEFAULT_PALLET_SELF_WEIGHT_KG)
-        )
-        packing_lines, summary = _compute_packing(
-            items,
-            kg_per_carton=eff_kg_per_carton,
-            cartons_per_pallet=eff_cartons_per_pallet,
-            pallet_self_weight_kg=eff_pallet_self_weight,
-            measurement_per_pallet_m3=packing_cfg.get(
-                "measurement_per_pallet_m3", DEFAULT_MEASUREMENT_PER_PALLET_M3
-            ),
-        )
+        # 逐行托盘预设：config.packing.pallets.{wooden,metal}
+        pallet_presets = packing_cfg.get("pallets", {})
+        if not pallet_presets:
+            # 兼容：无预设时退回模块默认木托盘
+            pallet_presets = {
+                "wooden": {
+                    "capacity_m2": 200.0,
+                    "self_weight_kg": DEFAULT_PALLET_SELF_WEIGHT_KG,
+                    "measurement_m3": DEFAULT_MEASUREMENT_PER_PALLET_M3,
+                }
+            }
+        packing_lines, summary = _compute_packing(items, pallet_presets)
 
         wb = Workbook()
         ws = wb.active
@@ -240,7 +239,7 @@ class PLWriterLite(BaseWriter):
         R += 1
 
         # Column headers
-        headers = ["No.", "Description", "Cartons", "KGS/CTN", "Qty (pcs)", "Net Weight", "Gross Weight"]
+        headers = ["No.", "Description", "Pallets", "KGS/PALLET", "Qty (m²)", "Net Weight", "Gross Weight"]
         header_fill = PatternFill("solid", fgColor="1F3864")
         for i, h in enumerate(headers, 1):
             c = _sc(ws, R, i, value=h,
@@ -259,28 +258,31 @@ class PLWriterLite(BaseWriter):
                 R += 1
                 prev_group = line.group_key
 
+            # 描述后缀托盘类型，便于核对（WOODEN / METAL）
+            desc_cell = f"{line.description}  [{line.pallet_type.upper()}]"
             _sc(ws, R, 1, value=idx, font=_fnt(10), align=_aln("center"), border=thin_bottom)
-            _sc(ws, R, 2, value=line.description, font=_fnt(10), border=thin_bottom)
-            _sc(ws, R, 3, value=line.cartons, font=_fnt(10), align=_aln("right"),
+            _sc(ws, R, 2, value=desc_cell, font=_fnt(10), border=thin_bottom)
+            _sc(ws, R, 3, value=line.pallets, font=_fnt(10), align=_aln("right"),
                 border=thin_bottom, num_fmt="#,##0")
-            _sc(ws, R, 4, value=line.kg_per_carton, font=_fnt(10), align=_aln("right"),
+            _sc(ws, R, 4, value=line.kg_per_pallet, font=_fnt(10), align=_aln("right"),
                 border=thin_bottom, num_fmt="#,##0.00")
             _sc(ws, R, 5, value=line.pcs, font=_fnt(10), align=_aln("right"),
-                border=thin_bottom, num_fmt="#,##0")
+                border=thin_bottom, num_fmt="#,##0.00")
             _sc(ws, R, 6, value=line.net_weight_kg, font=_fnt(10), align=_aln("right"),
                 border=thin_bottom, num_fmt="#,##0.00")
-            _sc(ws, R, 7, value="", font=_fnt(10), align=_aln("right"), border=thin_bottom)
+            _sc(ws, R, 7, value=line.gross_weight_kg, font=_fnt(10), align=_aln("right"),
+                border=thin_bottom, num_fmt="#,##0.00")
             R += 1
 
         # Total row
         total_border = _brd(top="thin", bottom="thin")
         _sc(ws, R, 1, value="", border=total_border)
         _sc(ws, R, 2, value="TOTAL:", font=_fnt(11, bold=True), border=total_border)
-        _sc(ws, R, 3, value=summary["total_cartons"], font=_fnt(11, bold=True),
+        _sc(ws, R, 3, value=summary["total_pallets"], font=_fnt(11, bold=True),
             align=_aln("right"), border=total_border, num_fmt="#,##0")
         _sc(ws, R, 4, value="", border=total_border)
         _sc(ws, R, 5, value=summary["total_pcs"], font=_fnt(11, bold=True),
-            align=_aln("right"), border=total_border, num_fmt="#,##0")
+            align=_aln("right"), border=total_border, num_fmt="#,##0.00")
         _sc(ws, R, 6, value=summary["total_net_weight"], font=_fnt(11, bold=True),
             align=_aln("right"), border=total_border, num_fmt="#,##0.00")
         _sc(ws, R, 7, value=summary["total_gross_weight"], font=_fnt(11, bold=True),
@@ -295,7 +297,7 @@ class PLWriterLite(BaseWriter):
         _sc(ws, R, 1, value=f"TOTAL MEASUREMENT: {summary['total_measurement_m3']:.2f} m³",
             font=_fnt(10))
         R += 1
-        _sc(ws, R, 1, value="PACKING: BULK IN CARTON, THEN ON EURO-PALLET.",
+        _sc(ws, R, 1, value="PACKING: ON WOODEN / METAL PALLETS, STRETCH FILM.",
             font=_fnt(10))
         R += 1
         R += 1
@@ -306,7 +308,6 @@ class PLWriterLite(BaseWriter):
         wb.save(output_path)
 
         # Write back to model
-        model.derived.total_cartons = summary["total_cartons"]
         model.derived.pallet_count = summary["total_pallets"]
         model.derived.total_net_weight = summary["total_net_weight"]
         model.derived.total_gross_weight = summary["total_gross_weight"]
@@ -316,7 +317,6 @@ class PLWriterLite(BaseWriter):
             "success": True,
             "pl_path": output_path,
             "items": len(packing_lines),
-            "total_cartons": summary["total_cartons"],
             "total_pallets": summary["total_pallets"],
             "total_net_weight": summary["total_net_weight"],
             "total_gross_weight": summary["total_gross_weight"],

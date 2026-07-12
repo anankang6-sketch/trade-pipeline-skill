@@ -138,6 +138,7 @@ def assemble(
             barcode=raw_item.get("barcode"),
             qty_box=raw_item.get("qty_box"),
             kg_mpcs=raw_item.get("kg_mpcs"),
+            pallet_type=raw_item.get("pallet_type"),
             group_key=raw_item.get("group_key", ""),
             din=raw_item.get("din_group") or raw_item.get("standard"),
             unit_price=raw_item.get("unit_price"),

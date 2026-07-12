@@ -2,10 +2,14 @@
 understanding/canonicalizer.py — RFQ Canonical 字段标准化
 
 标准化处理：
-  - quantity 单位统一（pcs / kgs / tons）
+  - quantity 单位统一（pcs / kgs / tons / sqm）
   - 标准号规范化（DIN 933 → DIN 933，去多余空格）
-  - description 统一英文格式
-  - group_key 提取（按 DIN/ISO 标准分组）
+  - description 统一英文格式（中文产品名翻译为英文）
+  - group_key 提取（按产品类型 + 规格分组）
+
+行业适配：落石防护网（RockFall Fences）
+  - 翻译表与分组逻辑已从紧固件改为防护网术语，
+    日后补充配件请改 CN_EN 表与 _extract_group_key。
 """
 import re
 
@@ -51,19 +55,14 @@ def _normalize_description(item: dict) -> None:
     # 去多余空格
     desc = re.sub(r"\s+", " ", desc.strip())
 
-    # 中文产品名 → 英文
+    # 中文产品名 → 英文（落石防护网行业；日后补充配件请在此追加）
     cn_en = [
-        ("平垫圈", "FLAT WASHER"),
-        ("弹簧垫圈", "SPRING LOCK WASHER"),
-        ("弹垫", "SPRING LOCK WASHER"),
-        ("六角螺栓", "HEX HEAD BOLT"),
-        ("六角螺母", "HEX NUT"),
-        ("内六角螺钉", "HEX SOCKET HEAD CAP SCREW"),
-        ("内六角螺栓", "HEX SOCKET HEAD CAP SCREW"),
-        ("自攻螺钉", "TAPPING SCREW"),
-        ("盖形螺母", "CAP NUT"),
-        ("法兰螺母", "FLANGE HEX NUT"),
-        ("尼龙锁紧螺母", "NYLON INSERT HEX NUT"),
+        ("环形网", "STEEL RING NET"),
+        ("环型网", "STEEL RING NET"),
+        ("菱形网", "RHOMBIC STEEL WIRE MESH"),
+        ("菱形钢丝网", "RHOMBIC STEEL WIRE MESH"),
+        ("钢丝网", "STEEL WIRE MESH"),
+        ("防护网", "PROTECTION NET"),
     ]
     # 逐条替换所有命中的中文品名，不 break——
     # 修复（P1）：原实现命中第一个词就 break，一行含多个中文品名时
@@ -96,57 +95,71 @@ def _normalize_unit(item: dict, fmt: str) -> None:
         "ton": "tons",
         "tons": "tons",
         "t": "tons",
+        "m2": "sqm",
+        "sqm": "sqm",
+        "m²": "sqm",
+        "平米": "sqm",
+        "平方米": "sqm",
+        "平方": "sqm",
     }
     item["unit"] = unit_map.get(unit_lower, unit_lower)
 
 
 def _extract_group_key(item: dict) -> None:
-    """提取分组键（用于报价单分组标题行）"""
+    """提取分组键（用于报价单分组标题行）— 落石防护网版
+
+    分组键 = 产品类型 + 规格（网孔尺寸 / 钢丝直径）+ 表面处理。
+    例如：
+      "STEEL RING NET — Ø300MM — GALVANIZED"
+      "RHOMBIC STEEL WIRE MESH — 75x93MM — WIRE Ø8MM"
+    """
     desc = item.get("description", "")
     std = item.get("standard", "")
 
-    if not std:
+    if not desc and not std:
         item["group_key"] = "__OTHER__"
         return
 
-    # 提取产品类型
     desc_upper = desc.upper()
-    if "HEX HEAD BOLT" in desc_upper:
-        ptype = "HEX HEAD BOLT"
-    elif "HEX SOCKET HEAD CAP" in desc_upper:
-        ptype = "HEX SOCKET HEAD CAP SCREW"
-    elif "BUTTON HEAD" in desc_upper:
-        ptype = "SOCKET BUTTON HEAD SCREW"
-    elif "SET SCREW" in desc_upper:
-        ptype = "HEX SOCKET SET SCREW"
-    elif "FLANGE HEX NUT" in desc_upper:
-        ptype = "FLANGE HEX NUT"
-    elif "NYLON INSERT" in desc_upper:
-        ptype = "NYLON INSERT HEX NUT"
-    elif "HEX NUT" in desc_upper:
-        ptype = "HEX NUT"
-    elif "THIN NUT" in desc_upper or "DIN439" in desc_upper.replace(" ", ""):
-        ptype = "CHAMFERED HEXAGON THIN NUT"
-    elif "CAP NUT" in desc_upper:
-        ptype = "CAP NUT"
-    # 具体品类必须排在通用 "WASHER" 之前，否则被通用分支遮蔽（T7）：
-    # "SPRING LOCK WASHER" 含子串 "WASHER"，放后面永远不可达。
-    elif "SPRING LOCK WASHER" in desc_upper or "DIN7980" in desc_upper.replace(" ", ""):
-        ptype = "SPRING LOCK WASHER"
-    elif "WASHER" in desc_upper or "垫圈" in desc_upper:
-        ptype = "FLAT WASHER"
-    elif "TAPPING" in desc_upper:
-        ptype = "TAPPING SCREW"
+
+    # ── 产品类型识别 ──
+    if "RING NET" in desc_upper or "环形网" in desc or "环型网" in desc:
+        ptype = "STEEL RING NET"
+    elif ("RHOMBIC" in desc_upper or "菱形网" in desc
+          or "WIRE MESH" in desc_upper or "钢丝网" in desc):
+        ptype = "RHOMBIC STEEL WIRE MESH"
+    # ── 预留：日后补充配件类型（如 BRACKET / ANCHOR 等）──
+    # elif "BRACKET" in desc_upper:
+    #     ptype = "BRACKET"
     else:
         ptype = ""
 
-    # 提取材质
-    mat_m = re.search(r"(A2-70|A4-80|A2|A4|ZP)", desc, re.IGNORECASE)
-    mat = mat_m.group(1).upper() if mat_m else ""
+    # ── 规格提取：钢丝直径 / 网环直径（Ø8mm / ∅300mm / D8）──
+    specs = []
+    m_dia = re.search(r"(?:WIRE|RING|∅|Ø|DIA|D)\s*(\d{1,4})\s*MM", desc, re.IGNORECASE)
+    if m_dia:
+        specs.append(f"Ø{m_dia.group(1)}MM")
 
-    parts = [std]
+    # 网孔尺寸（75x93mm / 100X100 MM）
+    m_size = re.search(r"(\d{2,4})\s*[x×X]\s*(\d{2,4})\s*MM", desc, re.IGNORECASE)
+    if m_size:
+        specs.append(f"{m_size.group(1)}x{m_size.group(2)}MM")
+
+    # ── 表面处理 ──
+    mat = ""
+    if re.search(r"GALVAN|ZP|镀锌", desc, re.IGNORECASE):
+        mat = "GALVANIZED"
+    elif re.search(r"STAINLESS|不锈钢|A2|A4", desc, re.IGNORECASE):
+        mat = "STAINLESS"
+
+    # ── 组装 group_key ──
+    parts = []
+    if std:
+        parts.append(std)
     if ptype:
         parts.append(ptype)
+    parts.extend(specs)
     if mat:
         parts.append(mat)
-    item["group_key"] = " — ".join(parts)
+
+    item["group_key"] = " — ".join(parts) if parts else "__OTHER__"

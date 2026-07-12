@@ -59,6 +59,7 @@ def _find_header_row(rows: list[list[str]]) -> int:
         "序号", "产品编码", "产品描述", "数量", "计量单位", "表面处理", "总重量",
         "规格", "报价", "单价", "barcode", "commodity description", "pcs",
         "total quantity", "kg/mpcs", "quantity in box", "uom",
+        "托盘", "pallet",
     }
     best_row, best_score = 0, 0
     for i, row in enumerate(rows[:10]):
@@ -90,6 +91,7 @@ def _map_header(header: str) -> str | None:
         (["kg/mpcs", "千件重"], "kg_mpcs"),
         (["quantity in box", "每箱数量", "箱入数"], "qty_box"),
         (["报价", "单价", "unit price", "price"], "price"),
+        (["托盘", "pallet", "pallet type"], "pallet_type"),
     ]
     for keywords, key in mapping:
         for kw in keywords:
@@ -123,7 +125,15 @@ def _is_data_row(row: list[str], no_idx: int | None) -> bool:
 def _detect_currency_from_headers(headers: list[str]) -> tuple[str, str]:
     """从列头中检测货币和价格单位"""
     text = " ".join(headers).upper()
+    text_norm = text.replace("²", "2").replace("平方米", "SQM").replace("平米", "SQM")
     has_weight_col = "总重量" in text or "WEIGHT" in text or "KGS" in text
+
+    # 按平方米计价（落石防护网等行业）：优先于重量列判定
+    if "SQM" in text_norm or "M2" in text_norm or "SQUARE" in text_norm:
+        if "CNY" in text or "RMB" in text or "人民币" in text:
+            return "CNY", "CNY/SQM"
+        return "USD", "USD/SQM"
+
     if "USD" in text:
         if "TON" in text:
             return "USD", "USD/TON"
@@ -184,6 +194,7 @@ def _parse_standard_rules(rows: list[list[str]], doc: ExtractedDocument) -> dict
     kg_idx = col_map.get("kg_mpcs")
     qbox_idx = col_map.get("qty_box")
     finish_idx = col_map.get("finish")
+    pallet_idx = col_map.get("pallet_type")
     price_idx = col_map.get("price")
 
     # 从 meta 获取跨 Sheet 补充价格
@@ -207,12 +218,28 @@ def _parse_standard_rules(rows: list[list[str]], doc: ExtractedDocument) -> dict
 
         barcode = row[barcode_idx].strip() if barcode_idx is not None and barcode_idx < len(row) else ""
         uom_raw = row[uom_idx].strip().lower() if uom_idx is not None and uom_idx < len(row) else "pcs"
-        unit = "pcs" if uom_raw in ("pc", "pcs", "件", "只", "个") else uom_raw
+        if uom_raw in ("pc", "pcs", "件", "只", "个"):
+            unit = "pcs"
+        elif uom_raw in ("m2", "sqm", "m²", "平米", "平方米", "平方"):
+            unit = "sqm"
+        else:
+            unit = uom_raw
         qty = _to_float(row[qty_idx]) if qty_idx < len(row) else 0
         weight = _to_float(row[weight_idx]) if weight_idx is not None and weight_idx < len(row) else None
         kg = _to_float(row[kg_idx]) if kg_idx is not None and kg_idx < len(row) else None
         qty_box = _to_int(row[qbox_idx]) if qbox_idx is not None and qbox_idx < len(row) else None
         finish = row[finish_idx].strip() if finish_idx is not None and finish_idx < len(row) else None
+
+        # 托盘类型：每行单独指定（落石防护网木/金属托盘各异）
+        pallet_raw = row[pallet_idx].strip().lower() if pallet_idx is not None and pallet_idx < len(row) else None
+        if pallet_raw:
+            if "wood" in pallet_raw or "木" in pallet_raw:
+                pallet = "wooden"
+            elif ("metal" in pallet_raw or "钢" in pallet_raw
+                  or "铁" in pallet_raw or "金属" in pallet_raw):
+                pallet = "metal"
+            else:
+                pallet = pallet_raw  # 原样保留（支持后续扩展其它托盘类型）
 
         standard = _extract_standard(desc)
 
@@ -241,6 +268,8 @@ def _parse_standard_rules(rows: list[list[str]], doc: ExtractedDocument) -> dict
             item["weight_kg"] = weight
         if finish:
             item["finish"] = finish
+        if pallet_raw:
+            item["pallet_type"] = pallet
 
         items.append(item)
 
@@ -338,7 +367,8 @@ Output JSON with this schema:
       "quantity": number,
       "unit": "pcs" or "tons",
       "kg_mpcs": number or null,
-      "qty_box": number or null
+      "qty_box": number or null,
+      "pallet_type": "wooden" or "metal" or null
     }
   ]
 }

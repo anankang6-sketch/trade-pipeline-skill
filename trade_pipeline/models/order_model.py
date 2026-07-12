@@ -57,6 +57,7 @@ class OrderItem:
     pcs_per_carton: int | None = None        # 每箱装多少件
     kg_per_carton_override: float | None = None  # 覆盖默认箱重
     weight_kg_per_piece: float | None = None  # 单件重量（kg/pc，比 kg_mpcs 更直观）
+    pallet_type: str | None = None        # 每行单独指定的托盘类型：wooden / metal（落石防护网等行业）
 
     @staticmethod
     def generate_uuid() -> str:

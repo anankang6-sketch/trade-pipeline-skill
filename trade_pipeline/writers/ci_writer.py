@@ -14,7 +14,7 @@ from openpyxl.styles import Font, Alignment
 from openpyxl.utils import get_column_letter
 
 from .base_writer import BaseWriter, sc as _sc, mc as _mc, brd as _brd
-from ..models.amounts import amount_formula, compute_amount
+from ..models.amounts import amount_formula, compute_amount, PricingMode
 
 CALIBRI = "Calibri"
 
@@ -232,7 +232,8 @@ class CIWriter(BaseWriter):
         R += 1
 
         # ── 单位行 ──
-        unit_label = "pcs" if model.order.format != "washers_mar" else "tons"
+        is_per_sqm = PricingMode.from_price_unit(price_unit) is PricingMode.PER_SQM
+        unit_label = "tons" if model.order.format == "washers_mar" else ("m²" if is_per_sqm else "pcs")
         _sc(ws, R, 3, value=f"Order No.:{model.order.pi_number}",
             font=_fnt(11, bold=True))
         _sc(ws, R, 14, value=unit_label, font=_fnt(11), align=_aln("right"),
@@ -266,7 +267,8 @@ class CIWriter(BaseWriter):
 
             # N: qty
             _sc(ws, R, 14, value=item.quantity, font=_fnt(10), align=_aln("right"),
-                border=_brd(left="thin"), num_fmt='#,##0')
+                border=_brd(left="thin"),
+                num_fmt='#,##0.00' if is_per_sqm else '#,##0')
 
             # O: weight
             weight = item.weight_kg
@@ -312,7 +314,8 @@ class CIWriter(BaseWriter):
         _sc(ws, R, 3, value="TOTAL:", font=_fnt(12), align=_aln("left"))
         _sc(ws, R, 14, value=f"=SUM(N{DATA_START}:N{DATA_END})", formula=True,
             font=_fnt(12), align=_aln("right"),
-            border=_brd(left="thin", top="thin", bottom="thin"), num_fmt='#,##0')
+            border=_brd(left="thin", top="thin", bottom="thin"),
+            num_fmt='#,##0.00' if is_per_sqm else '#,##0')
         _sc(ws, R, 15, value=f"=SUM(O{DATA_START}:O{DATA_END})", formula=True,
             font=_fnt(12), align=_aln("right"),
             border=_brd(left="thin", top="thin", bottom="thin"), num_fmt='#,##0.00')

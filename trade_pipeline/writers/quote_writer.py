@@ -55,7 +55,7 @@ class QuoteWriter(BaseWriter):
         items = model.items
         order_no = model.order.order_no
         currency = model.order.currency or "CNY"
-        price_unit = model.order.price_unit or f"{currency}/MPCS"
+        price_unit = model.order.price_unit or f"{currency}/SQM"
         date = model.order.date
         has_weight = model.derived.has_weight or False
 
@@ -72,12 +72,12 @@ class QuoteWriter(BaseWriter):
         uuid_col_idx = NCOLS + 1
 
         if has_weight:
-            HEADERS = ["No.", "Barcode", "Description", "UOM", "Qty (pcs)",
-                       f"Unit Price\n({price_unit})", "Weight\n(KG/MPCS)", "Qty/Box"]
+            HEADERS = ["No.", "Barcode", "Description", "UOM", "Qty (m²)",
+                       f"Unit Price\n({price_unit})", "Weight\n(KG)", "Qty/Roll"]
             col_widths = [5, 16, 50, 5.5, 12, 16, 13, 8]
         else:
-            HEADERS = ["No.", "Barcode", "Description", "UOM", "Qty (pcs)",
-                       f"Unit Price\n({price_unit})", f"Amount\n({currency})", "Qty/Box"]
+            HEADERS = ["No.", "Barcode", "Description", "UOM", "Qty (m²)",
+                       f"Unit Price\n({price_unit})", f"Amount\n({currency})", "Qty/Roll"]
             col_widths = [5, 16, 50, 5.5, 12, 16, 16, 8]
 
         ws.sheet_properties = WorksheetProperties(
@@ -199,7 +199,7 @@ class QuoteWriter(BaseWriter):
                 c.font = _fnt()
                 c.border = Border(bottom=_thin())
                 if col_i == 5:
-                    c.number_format = "#,##0"
+                    c.number_format = "#,##0.##"
                 elif col_i in (6, 7):
                     c.number_format = "#,##0.00"
                 if col_i == 6:
